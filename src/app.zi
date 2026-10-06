@@ -1,0 +1,155 @@
+// Product UI belongs to this app. Harmony hosts its window without a chat UI.
+using UI :: #import "kryon/Widgets";
+Model :: #import "model";
+DesktopState :: #import "desktop";
+DesktopHost :: #import "kryon/Desktop";
+ScrollDevice :: #import "kryon/ScrollDevice";
+SystemStyle :: #import "kss/SystemStyle";
+SystemThemeLinux :: #import "kryon/SystemThemeLinux";
+#import "std/text_buffer"
+#import "std/timer_linux"
+using ButtonTone;
+using ButtonEmphasis;
+theme_frames: s32;
+
+FollowTheme :: () {
+    if theme_frames%120==0 { SystemStyle.StyleInstallSystem(SystemThemeLinux.SystemPaletteRead()) }
+    theme_frames+=1
+}
+
+Label :: (session: Session, id: s32, value: string, bounds: Rectangle, font: s32, secondary: bool) {
+    props: TextProps; props.key=cast(u64)id; props.text=value; props.bounds=bounds; props.font=font; props.disabled=secondary; props.wrap=TextWrap.TextWrapNone
+    Text(session,props)
+}
+Panel :: (session: Session, id: s32, bounds: Rectangle, token: string) {
+    props: BoxProps; props.key=cast(u64)id; props.bounds=bounds; props.fill=StyleTokenColor(token); Box(session,props)
+}
+Action :: (session: Session, id: s32, label: string, bounds: Rectangle, active: bool, enabled: bool) -> bool {
+    DesktopState.Record(id,label,bounds.x,bounds.y,bounds.width,bounds.height,enabled)
+    props: ButtonProps; props.key=cast(u64)id; props.id=id; props.label=label; props.bounds=bounds; props.disabled=!enabled
+    if active { props.tone=cast(ButtonTone)ButtonToneAccent; props.emphasis=cast(ButtonEmphasis)ButtonEmphasisFilled }
+    return Button(session,props)==1
+}
+
+DrawComposer :: (session: Session, viewport: Rectangle, key: s32, modifiers: s32, typed: string) {
+    // A separate editor with explicit submit and close controls. Failed posts
+    // keep the draft so retry never requires rewriting it.
+    x:=viewport.x+20.0; y:=viewport.y+20.0; width:=viewport.width-40.0
+    Panel(session,9000,viewport,"canvas")
+    Label(session,9001,ifx Model.composer==1 then "New issue" else "Write a comment",.{x,y,width-110.0,36.0},24,false)
+    if Action(session,9002,"Close",.{x+width-90.0,y,90.0,36.0},false,!Model.loading) || (key==KeyEscape && !Model.loading) { Model.composer=0; return }
+    y+=48.0
+    if Model.composer==1 {
+        changed:=TitleField(session,.{x,y,width,42.0},key,modifiers,typed)
+        Model.title_cursor=changed.cursor; Model.title_anchor=changed.anchor; Model.title_focus=changed.focused
+        if changed.edit.changed { Model.EditTitle(changed.edit.start,changed.edit.end,changed.edit.replacement) }
+        y+=54.0
+    }
+    result:=DraftArea(session,.{x,y,width,viewport.height-(y-viewport.y)-122.0},key,modifiers,typed)
+    Model.draft_cursor=result.cursor; Model.draft_anchor=result.anchor; Model.draft_scroll=result.scroll_y; Model.draft_focus=result.focused
+    if result.edit.changed { Model.EditDraft(result.edit.start,result.edit.end,result.edit.replacement) }
+    Label(session,9005,TextUntilNul(Model.message[:]),.{x,viewport.y+viewport.height-104.0,width,28.0},14,true)
+    if Action(session,9006,ifx Model.loading then "Submitting…" else ifx Model.composer==1 then "Create issue" else "Post comment",.{x,viewport.y+viewport.height-62.0,180.0,42.0},true,!Model.loading && Model.draft[0]!=0 && (Model.composer!=1 || Model.draft_title[0]!=0)) { Model.Request(ifx Model.composer==1 then "create_issue" else "comment") }
+}
+
+#program_export
+Frame :: (session: Session, viewport: Rectangle) -> s32 {
+    DesktopState.control_count=0
+    defer { DesktopState.Publish() }
+    FollowTheme()
+    Model.Tick()
+    key:=KeyboardTake(session); modifiers:=KeyboardModifiers(session); typed_bytes: [256]u8; typed:=TypedTextTake(session,typed_bytes[:])
+    if Model.composer!=0 { DrawComposer(session,viewport,key,modifiers,typed); return 0 }
+    Panel(session,1,viewport,"canvas")
+    narrow:=viewport.width<680.0; navigation: float32=ifx narrow then 0.0 else 180.0
+    x:=viewport.x+navigation+24.0; width:=viewport.width-navigation-48.0; y:=viewport.y
+    if !narrow {
+        Panel(session,2,.{viewport.x,viewport.y,180.0,viewport.height},"surface")
+        Label(session,3,"GitHub",.{viewport.x+20.0,y+24.0,140.0,38.0},26,false)
+        Label(session,4,TextUntilNul(Model.account[:]),.{viewport.x+20.0,y+68.0,140.0,26.0},14,true)
+    } else { Label(session,3,"GitHub",.{x,y+8.0,width,32.0},24,false) }
+    labels: [4]string=.{"Organizations","Repositories","Starred","Notifications"}
+    views: [4]string=.{"organizations","repositories","starred","notifications"}
+    for i: 0..cast(s32)3 {
+        bounds: Rectangle=.{viewport.x+12.0,y+124.0+cast(float32)i*48.0,156.0,40.0}
+        if narrow { part:=width/4.0; bounds=.{x+cast(float32)i*part,y+48.0,part-4.0,36.0} }
+        if Action(session,100+i,labels[i],bounds,Model.View()==views[i] && Model.Repo()=="" && Model.Org()=="",!Model.loading) { Model.Navigate(views[i]) }
+    }
+    top:=ifx narrow then y+98.0 else y+20.0
+    if Action(session,110,"Back",.{x,top,84.0,34.0},false,!Model.loading && Model.depth>0) { Model.Back() }
+    if Action(session,111,"Refresh",.{x+width-90.0,top,90.0,34.0},false,!Model.loading) { Model.Request("") }
+    Label(session,112,TextUntilNul(Model.title[:]),.{x,top+46.0,width,34.0},24,false)
+    Label(session,113,TextUntilNul(Model.subtitle[:]),.{x,top+88.0,width,26.0},14,true)
+    top+=126.0
+    if Model.Repo()!="" {
+        tabs: [8]string=.{"Overview","Code","Issues","PRs","Commits","Branches","Releases","Actions"}
+        tabviews: [8]string=.{"overview","code","issues","pulls","commits","branches","releases","actions"}
+        columns:=ifx width<620.0 then 4 else 8; tabwidth:=width/cast(float32)columns
+        for i: 0..cast(s32)7 {
+            if Action(session,200+i,tabs[i],.{x+cast(float32)(i%columns)*tabwidth,top+cast(float32)(i/columns)*40.0,tabwidth-4.0,34.0},Model.View()==tabviews[i],!Model.loading) { Model.Tab(tabviews[i]) }
+        }
+        top+=ifx columns==4 then 90.0 else 48.0
+        if Model.can_star {
+            if Action(session,210,ifx Model.starred then "Starred" else "Star",.{x,top,126.0,34.0},Model.starred,!Model.loading) { Model.Request(ifx Model.starred then "unstar" else "star") }
+            top+=44.0
+        }
+        if Model.View()=="issues" || Model.View()=="issue" || Model.View()=="pull" {
+            if Action(session,211,ifx Model.View()=="issues" then "New issue" else "Comment",.{x,top,140.0,34.0},true,!Model.loading) { Model.composer=ifx Model.View()=="issues" then 1 else 2; Model.title_focus=Model.composer==1; Model.draft_focus=Model.composer==2 }
+            top+=44.0
+        }
+    } else if Model.View()=="repositories" || Model.View()=="starred" {
+        changed:=SearchField(session,.{x,top,width-96.0,38.0},key,modifiers,typed)
+        Model.query_cursor=changed.cursor; Model.query_anchor=changed.anchor; Model.query_focus=changed.focused
+        if changed.edit.changed { Model.EditQuery(changed.edit.start,changed.edit.end,changed.edit.replacement) }
+        if Action(session,301,"Search",.{x+width-88.0,top,88.0,38.0},true,!Model.loading) || (changed.committed && !Model.loading) { Model.route.page=1; Model.Changed() }
+        top+=50.0
+    }
+    Label(session,400,TextUntilNul(Model.message[:]),.{x,top,width,24.0},14,true); top+=32.0
+    bottom:=viewport.y+viewport.height-64.0
+    if Model.body[0]!=0 {
+        area: TextAreaProps; area.key=500; area.focus_id=500; area.bounds=.{x,top,width,bottom-top-8.0}; area.value=TextUntilNul(Model.body[:]); area.label="GitHub content"; area.read_only=true; area.wrap=Model.View()!="file"; area.cursor=Model.body_cursor; area.anchor=Model.body_anchor; area.scroll_y=Model.body_scroll; area.focused=Model.body_focus
+        area.input.wheel=PointerWheelTake(session,area.bounds)
+        if area.focused { area.input.left=key==KeyLeft; area.input.right=key==KeyRight; area.input.up=key==KeyUp; area.input.down=key==KeyDown; area.input.select_all=(modifiers & KeyModifierControl)!=0 && key==65; area.input.copy=(modifiers & KeyModifierControl)!=0 && key==67 }
+        result:=TextArea(session,area); Model.body_scroll=result.scroll_y; Model.body_cursor=result.cursor; Model.body_anchor=result.anchor; Model.body_focus=result.focused
+    } else {
+        viewport_scroll: ScrollProps; viewport_scroll.key=600; viewport_scroll.bounds=.{x,top,width,bottom-top}; viewport_scroll.content_height=Model.count*110; viewport_scroll.scroll_offset=Model.scroll
+        pointer:=DesktopHost.PollPointer()
+        ScrollDevice.BeginScrollFrame(session,.{pointer.x,pointer.y},pointer.pressed,pointer.down,pointer.released,PointerWheelTake(session,viewport_scroll.bounds),cast(float64)MonotonicMilliseconds()/1000.0)
+        scrolling:=Scroll(session,viewport_scroll); Model.scroll=scrolling.scroll_offset
+        if Model.count==0 { Label(session,601,ifx Model.loading then "Loading your GitHub account…" else "No items in this view.",.{x,top+20.0,width,32.0},16,true) }
+        for i: 0..Model.count-1 {
+            row_y:=top+cast(float32)(i*110-Model.scroll)
+            if row_y+106.0<top || row_y>bottom { continue }
+            Panel(session,1000+i,.{x,row_y,width,104.0},"card")
+            if Action(session,2000+i,Model.Field(i,0),.{x+8.0,row_y+6.0,width-24.0,36.0},false,!Model.loading) { Model.Select(i); break }
+            Label(session,3000+i,Model.Field(i,1),.{x+14.0,row_y+47.0,width-30.0,22.0},14,true)
+            Label(session,4000+i,Model.Field(i,2),.{x+14.0,row_y+76.0,width-30.0,22.0},13,true)
+        }
+        if scrolling.opened { unused End(session) }
+    }
+    if Action(session,700,"Previous",.{x,bottom+12.0,96.0,36.0},false,Model.previous && !Model.loading) { Model.Page(-1) }
+    if Action(session,701,"Next",.{x+width-96.0,bottom+12.0,96.0,36.0},false,Model.next && !Model.loading) { Model.Page(1) }
+    return 0
+}
+
+TitleField :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typed: string) -> TextFieldResult {
+        field: TextFieldProps; field.key=9003; field.focus_id=9003; field.bounds=bounds; field.label="Issue title"; field.placeholder="Issue title"; field.value=TextUntilNul(Model.draft_title[:]); field.max_bytes=256
+        field.cursor=Model.title_cursor; field.anchor=Model.title_anchor; field.focused=Model.title_focus
+        if field.focused { field.input=TextFieldInputFor(key,modifiers,typed) }
+    return TextField(session,field)
+}
+
+DraftArea :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typed: string) -> TextAreaResult {
+    area: TextAreaProps; area.key=9004; area.focus_id=9004; area.bounds=bounds; area.value=TextUntilNul(Model.draft[:]); area.label="Message"; area.placeholder="Write in Markdown…"; area.wrap=true; area.max_bytes=60000
+    area.cursor=Model.draft_cursor; area.anchor=Model.draft_anchor; area.scroll_y=Model.draft_scroll; area.focused=Model.draft_focus
+    area.input.wheel=PointerWheelTake(session,bounds)
+    if area.focused { area.input.text=typed; area.input.left=key==KeyLeft; area.input.right=key==KeyRight; area.input.up=key==KeyUp; area.input.down=key==KeyDown; area.input.backspace=key==KeyBackspace; area.input.delete_forward=key==KeyDelete; area.input.enter=key==KeyEnter; area.input.home=key==KeyHome; area.input.end=key==KeyEnd; area.input.select_all=(modifiers & KeyModifierControl)!=0 && key==65; area.input.paste=(modifiers & KeyModifierControl)!=0 && key==86; area.input.copy=(modifiers & KeyModifierControl)!=0 && key==67 }
+    return TextArea(session,area)
+}
+
+SearchField :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typed: string) -> TextFieldResult {
+        field: TextFieldProps; field.key=300; field.focus_id=300; field.bounds=bounds; field.value=TextUntilNul(Model.query[:]); field.placeholder="Search GitHub repositories"; field.label="Search repositories"; field.max_bytes=200
+        field.cursor=Model.query_cursor; field.anchor=Model.query_anchor; field.focused=Model.query_focus
+        if field.focused { field.input=TextFieldInputFor(key,modifiers,typed) }
+    return TextField(session,field)
+}

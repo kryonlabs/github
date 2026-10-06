@@ -1,0 +1,93 @@
+// A single asynchronous worker keeps network IO outside the UI frame.
+#import "std/byte_text_linux"
+#import "std/text_buffer"
+libc :: #system_library "libc";
+Open :: (path: *u8, flags: s32, mode: ..any) -> s32 #foreign libc "open";
+Read :: (descriptor: s32, output: *u8, length: u64) -> s64 #foreign libc "read";
+Write :: (descriptor: s32, input: *u8, length: u64) -> s64 #foreign libc "write";
+Close :: (descriptor: s32) -> s32 #foreign libc "close";
+Fork :: () -> s32 #foreign libc "fork";
+Exec :: (file: *u8, arg0: *u8, args: ..any) -> s32 #foreign libc "execlp";
+Exit :: (code: s32) #foreign libc "_exit";
+Wait :: (process: s32, status: *s32, options: s32) -> s32 #foreign libc "waitpid";
+Temporary :: (pattern: *u8) -> *u8 #foreign libc "mkdtemp";
+Unlink :: (path: *u8) -> s32 #foreign libc "unlink";
+Environment :: (name: *u8) -> *u8 #foreign libc "getenv";
+Link :: (path: *u8, out: *u8, size: u64) -> s64 #foreign libc "readlink";
+Access :: (path: *u8, mode: s32) -> s32 #foreign libc "access";
+
+pid: s32;
+request_path: [4096]u8;
+response_path: [4096]u8;
+helper: [4096]u8;
+data: [1048576]u8;
+size: s32;
+error: string;
+initialized: bool;
+
+Copy :: (out: []u8, value: string) {
+    count := cast(s32)value.count; if count >= cast(s32)out.count { count = cast(s32)out.count - 1 }
+    for i: 0..count - 1 { out[i] = value[i] }; out[count] = 0
+}
+
+Init :: () -> bool {
+    if initialized { return true }
+    folder: [64]u8; Copy(folder[:], "/tmp/github-client-XXXXXX")
+    if Temporary(*folder[0]) == null { error = "Cannot create private request storage"; return false }
+    root := TextUntilNul(folder[:]); prefix := cast(s32)root.count
+    Copy(request_path[:],root); Copy(request_path[prefix:],"/request.json")
+    Copy(response_path[:],root); Copy(response_path[prefix:],"/response.json")
+    name: [64]u8; Copy(name[:], "GITHUB_CLIENT_API")
+    override := Environment(*name[0])
+    if override != null { Copy(helper[:], TextFromCString(override)) }
+    else {
+        Copy(name[:], "/proc/self/exe")
+        length := cast(s32)Link(*name[0], *helper[0], 4000)
+        if length <= 0 { error="Cannot locate the GitHub transport"; return false }
+        while length > 0 && helper[length-1] != 47 { length -= 1 }
+        Copy(helper[length:], "api.py")
+    }
+    if Access(*helper[0],4) != 0 { error="GitHub transport is missing; rebuild or reinstall the app"; return false }
+    initialized = true; return true
+}
+
+Start :: (request: string) -> bool {
+    if pid > 0 || !Init() { return false }
+    error=""; size=0; unused Unlink(*response_path[0])
+    descriptor := Open(*request_path[0], 577, cast(u32)384)
+    if descriptor < 0 { error="Cannot write GitHub request"; return false }
+    bytes := cast(*TextDescriptor)(*request); written: s64
+    while written < request.count {
+        n := Write(descriptor, *bytes.data[written], cast(u64)(request.count-written))
+        if n <= 0 { break }; written += n
+    }
+    unused Close(descriptor)
+    if written != request.count { error="Cannot write complete GitHub request"; return false }
+    pid=Fork()
+    if pid < 0 { pid=0; error="Cannot start GitHub transport"; return false }
+    if pid == 0 {
+        command: [16]u8; Copy(command[:],"python3")
+        unused Exec(*command[0], *command[0], *helper[0], *request_path[0], *response_path[0], cast(*u8)null)
+        Exit(127)
+    }
+    return true
+}
+
+Poll :: () -> bool {
+    if pid <= 0 { return false }
+    status: s32; done := Wait(pid,*status,1)
+    if done == 0 { return false }; pid=0
+    if done < 0 || status != 0 { error="GitHub transport stopped unexpectedly. Refresh to retry."; return true }
+    descriptor := Open(*response_path[0],0)
+    if descriptor < 0 { error="GitHub returned no response. Refresh to retry."; return true }
+    size=0
+    while size < 1048575 {
+        n := Read(descriptor,*data[size],cast(u64)(1048575-size))
+        if n <= 0 { break }; size += cast(s32)n
+    }
+    extra: u8; remaining := Read(descriptor,*extra,1); unused Close(descriptor)
+    if remaining > 0 { error="GitHub response exceeded the preview limit"; size=0 }
+    data[size]=0; unused Unlink(*request_path[0]); unused Unlink(*response_path[0])
+    return true
+}
+Value :: () -> string { return TextFromBytes(data[:size]) }

@@ -1,0 +1,34 @@
+[package]
+name = "github"
+tool = "kryon"
+entry = "src/app.zi"
+module_roots = ["src", "tests"]
+bridge_modules = ["app"]
+
+[toolchain]
+git = "https://github.com/ziranlang/ziran.git"
+ref = "master"
+
+[dependencies.kryon]
+git = "https://github.com/kryonlabs/kryon.git"
+ref = "master"
+
+[install]
+bin = "github-client"
+
+[tool.kryon]
+default_profile = "desktop"
+
+[tool.kryon.profiles.desktop]
+backend = "desktop"
+library = "X11"
+
+[tool.kryon.install]
+profile = "desktop"
+name = "GitHub"
+comment = "Native GitHub client for organizations, code and collaboration"
+categories = "Development;"
+
+[dependencies.kss]
+git = "https://github.com/kryonlabs/kss.git"
+ref = "master"

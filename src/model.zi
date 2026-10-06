@@ -1,0 +1,141 @@
+Transport :: #import "transport";
+#import "std/json_scan"
+#import "std/text"
+#import "std/text_buffer"
+#import "std/byte_text_linux"
+libc :: #system_library "libc";
+Free :: (memory: *void) #foreign libc "free";
+Release :: (value: string) { descriptor:=cast(*TextDescriptor)(*value); Free(cast(*void)descriptor.data) }
+
+Route :: struct {
+    view: [32]u8
+    repo: [257]u8
+    org: [129]u8
+    path: [2049]u8
+    ref: [257]u8
+    item: [257]u8
+    page: s32
+}
+route: Route;
+history: [64]Route;
+depth: s32;
+started: bool;
+loading: bool;
+next: bool;
+previous: bool;
+starred: bool;
+can_star: bool;
+title: [2049]u8;
+subtitle: [2049]u8;
+message: [2049]u8;
+account: [129]u8;
+body: [1048576]u8;
+fields: [30][6][2049]u8;
+count: s32;
+scroll: s32;
+body_scroll: s32;
+body_cursor: s32;
+body_anchor: s32;
+body_focus: bool;
+query: [201]u8;
+query_cursor: s32;
+query_anchor: s32;
+query_focus: bool;
+composer: s32; // 1 = issue, 2 = comment
+draft_title: [257]u8;
+draft: [60001]u8;
+draft_cursor: s32;
+draft_anchor: s32;
+draft_scroll: s32;
+draft_focus: bool;
+title_cursor: s32;
+title_anchor: s32;
+title_focus: bool;
+
+View :: () -> string { return TextUntilNul(route.view[:]) }
+Repo :: () -> string { return TextUntilNul(route.repo[:]) }
+Org :: () -> string { return TextUntilNul(route.org[:]) }
+Path :: () -> string { return TextUntilNul(route.path[:]) }
+Ref :: () -> string { return TextUntilNul(route.ref[:]) }
+Item :: () -> string { return TextUntilNul(route.item[:]) }
+Field :: (row: s32, slot: s32) -> string { return TextUntilNul(fields[row][slot][:]) }
+Set :: (out: []u8, value: string) { Transport.Copy(out, value) }
+
+Quoted :: (out: *Vec(u8), value: string) {
+    BuilderPrint(out,"\"")
+    for i: 0..cast(s32)value.count-1 {
+        byte:=value[i]
+        if byte==34 { BuilderPrint(out,"\\\"") }
+        else if byte==92 { BuilderPrint(out,"\\\\") }
+        else if byte==10 { BuilderPrint(out,"\\n") }
+        else if byte==13 { BuilderPrint(out,"\\r") }
+        else if byte==9 { BuilderPrint(out,"\\t") }
+        else if byte>=32 { BuilderPrint(out,"%",value[i:i+1]) }
+    }; BuilderPrint(out,"\"")
+}
+Property :: (out: *Vec(u8), key: string, value: string) { BuilderPrint(out,",\"%\":",key); Quoted(out,value) }
+
+Request :: (mutation: string) {
+    if loading { return }
+    out: Vec(u8); BuilderPrint(*out,"{\"page\":%",route.page)
+    Property(*out,"view",View()); Property(*out,"org",Org()); Property(*out,"repo",Repo()); Property(*out,"path",Path())
+    Property(*out,"ref",Ref()); Property(*out,"item",Item()); Property(*out,"query",TextUntilNul(query[:]))
+    if mutation!="" { Property(*out,"mutation",mutation); Property(*out,"title",TextUntilNul(draft_title[:])); Property(*out,"text",TextUntilNul(draft[:])) }
+    BuilderPrint(*out,"}"); value:=BuilderFinish(out)
+    loading=Transport.Start(value)
+    descriptor:=cast(*TextDescriptor)(*value); Free(cast(*void)descriptor.data)
+    if loading { Set(message[:],"Loading…") } else { Set(message[:],Transport.error) }
+}
+Decode :: (at: s32, key: string, out: []u8) {
+    value:=Transport.Value(); size:=ReadStringText(value,FieldAt(value,at,key),out)
+    if size<0 || size>=cast(s32)out.count { out[0]=0 } else { out[size]=0 }
+}
+Flag :: (key: string) -> bool { value:=Transport.Value(); at:=FieldAt(value,0,key); return at>=0 && value[at:ValueEnd(value,at,0)]=="true" }
+
+Tick :: () {
+    if !started { started=true; Set(route.view[:],"organizations"); route.page=1; Request("") }
+    if !Transport.Poll() { return }; loading=false
+    if Transport.error!="" { Set(message[:],Transport.error); return }
+    Decode(0,"message",message[:]); state: [32]u8; Decode(0,"state",state[:])
+    if TextUntilNul(state[:])!="ready" { return }
+    Decode(0,"title",title[:]); Decode(0,"subtitle",subtitle[:]); Decode(0,"account",account[:]); Decode(0,"body",body[:])
+    next=Flag("next"); previous=Flag("previous"); starred=Flag("starred"); can_star=Flag("can_star")
+    rows:=FieldAt(Transport.Value(),0,"rows"); count=ArrayCount(Transport.Value(),rows); if count<0 { count=0 }; if count>30 { count=30 }
+    names: [6]string=.{"title","subtitle","metadata","kind","target","repo"}
+    for i: 0..count-1 { at:=ElementAt(Transport.Value(),rows,i); for f: 0..cast(s32)5 { Decode(at,names[f],fields[i][f][:]) } }
+    if composer!=0 && TextUntilNul(message[:])!="" { composer=0; draft[0]=0; draft_title[0]=0 }
+}
+Push :: () {
+    if depth>=64 { for i: 0..cast(s32)62 { history[i]=history[i+1] }; depth=63 }
+    history[depth]=route; depth+=1
+}
+Changed :: () { count=0; body[0]=0; title[0]=0; subtitle[0]=0; can_star=false; next=false; previous=false; scroll=0; body_scroll=0; body_cursor=0; body_anchor=0; body_focus=false; Request("") }
+Navigate :: (view: string) {
+    if loading { return }; Push(); route=.{}; route.page=1; Set(route.view[:],view); query[0]=0; query_cursor=0; query_anchor=0; Changed()
+}
+Back :: () { if loading || depth==0 { return }; depth-=1; route=history[depth]; query[0]=0; Changed() }
+Tab :: (view: string) { if loading { return }; Push(); Set(route.view[:],view); route.page=1; route.path[0]=0; route.item[0]=0; query[0]=0; Changed() }
+Select :: (index: s32) {
+    if loading || index<0 || index>=count { return }
+    kind:=Field(index,3); target:=Field(index,4); repo:=Field(index,5); Push(); route.page=1; query[0]=0
+    if kind=="org" { route=.{}; route.page=1; Set(route.org[:],target); Set(route.view[:],"repositories") }
+    else if kind=="repo" { route=.{}; route.page=1; Set(route.repo[:],repo); Set(route.view[:],"overview") }
+    else if kind=="dir" || kind=="file" { Set(route.path[:],target); Set(route.view[:],ifx kind=="dir" then "code" else "file") }
+    else if kind=="branch" { Set(route.ref[:],target); route.path[0]=0; Set(route.view[:],"code") }
+    else if kind=="notification" { Set(route.item[:],target); Request("read_notification"); return }
+    else { Set(route.repo[:],repo); Set(route.view[:],kind); Set(route.item[:],target) }
+    Changed()
+}
+Page :: (delta: s32) { if loading { return }; route.page+=delta; if route.page<1 { route.page=1 }; Changed() }
+Edit :: (buffer: []u8, start: s32, end: s32, replacement: string) {
+    replacement_copy: [60001]u8; Set(replacement_copy[:],replacement)
+    length:=cast(s32)TextUntilNul(buffer).count; inserted:=cast(s32)replacement.count
+    if start<0 || end<start || end>length || length-(end-start)+inserted>=cast(s32)buffer.count { return }
+    shift:=inserted-(end-start)
+    if shift>0 { i:=length; while i>=end { buffer[i+shift]=buffer[i]; i-=1 } }
+    else { for i: end..length { buffer[i+shift]=buffer[i] } }
+    for i: 0..inserted-1 { buffer[start+i]=replacement_copy[i] }
+}
+EditTitle :: (start: s32, end: s32, replacement: string) { Edit(draft_title[:],start,end,replacement) }
+EditDraft :: (start: s32, end: s32, replacement: string) { Edit(draft[:],start,end,replacement) }
+EditQuery :: (start: s32, end: s32, replacement: string) { Edit(query[:],start,end,replacement) }
