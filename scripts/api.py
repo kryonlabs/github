@@ -90,6 +90,12 @@ def repo_row(repo):
                "repo", repo["full_name"], repo["full_name"])
 
 
+def matches(repo, query):
+    words = query.casefold().split()
+    haystack = " ".join(str(repo.get(k) or "") for k in ("full_name", "description", "language")).casefold()
+    return all(word in haystack for word in words)
+
+
 class Client:
     def __init__(self, api=call):
         self.api = api
@@ -113,7 +119,7 @@ class Client:
             raise Failure("GitHub account could not be verified.")
         result = dict(state="ready", message="", account=text(user["login"], 100), view=view,
                       title="GitHub", subtitle="", body="", rows=[], next=False, previous=page > 1,
-                      can_star=False, starred=False, number=0)
+                      can_star=False, starred=False, number=0, summary={}, languages=[])
         mutation = request.get("mutation", "")
         if mutation:
             return self.mutate(request, repo, mutation, result)
@@ -125,15 +131,36 @@ class Client:
             result.update(title="Organizations", subtitle="Choose an organization to explore its repositories.")
             result["rows"] = [row(v["login"], v.get("description"), "Organization", "org", v["login"]) for v in values]
         elif view in ("repositories", "starred"):
+            resource = "user/starred" if view == "starred" else f"orgs/{org}/repos" if org else "user/repos"
             if query:
-                endpoint = "search/repositories?" + urlencode(params | {"q": query + (" org:" + org if org else ""), "sort": "updated"})
-                values, headers = self.api(endpoint)
-                values = values["items"]
+                # Filter the actual accessible collection, including private
+                # organization/collaborator repos. GitHub's global search is
+                # not a search of either this account's repos or its stars.
+                values = []
+                upstream_page = 1
+                needed = page * PAGE_SIZE + 1
+                while len(values) < needed:
+                    scanned = resource + "?" + urlencode({"per_page": 100, "page": upstream_page, "sort": "updated"})
+                    candidates, scan_headers = self.api(scanned)
+                    values.extend(v for v in candidates if matches(v, query))
+                    if not more(scan_headers, scanned):
+                        break
+                    upstream_page += 1
+                result["next"] = len(values) > page * PAGE_SIZE
+                values = values[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
             else:
-                endpoint = (f"orgs/{org}/repos" if org else "user/starred" if view == "starred" else "user/repos") + "?" + urlencode(params | {"sort": "updated"})
+                endpoint = resource + "?" + urlencode(params | {"sort": "updated"})
                 values, headers = self.api(endpoint)
-            result.update(title=("Search GitHub" if query else org or ("Starred repositories" if view == "starred" else "Repositories")),
-                          subtitle="Search GitHub repositories" if query else "Updated recently · select a repository to explore it.")
+            result.update(title=org or ("Starred repositories" if view == "starred" else "Repositories"),
+                          subtitle="Filtered by “" + text(query, 200) + "”" if query else "Updated recently · select a repository to explore it.")
+            if org and view == "repositories":
+                try:
+                    profile, _ = self.api(f"orgs/{org}")
+                    result["title"] = text(profile.get("name") or org)
+                    result["subtitle"] = " · ".join(filter(None, (org, text(profile.get("description")),
+                        str(profile["public_repos"]) + " public repositories" if "public_repos" in profile else "")))
+                except Failure:
+                    pass
             result["rows"] = [repo_row(v) for v in values]
         elif view == "notifications":
             endpoint = "notifications?" + urlencode(params | {"all": "true"})
@@ -153,16 +180,20 @@ class Client:
             value, _ = self.api(f"repos/{repo}")
             languages, _ = self.api(f"repos/{repo}/languages")
             total = sum(languages.values()) or 1
+            result["summary"] = dict(description=text(value.get("description")), stars=value.get("stargazers_count", 0),
+                forks=value.get("forks_count", 0), issues=value.get("open_issues_count", 0),
+                branch=text(value.get("default_branch")), license=text((value.get("license") or {}).get("spdx_id") or "No license", 100))
+            result["languages"] = [dict(name=text(name, 100), percent=round(size * 100 / total, 2))
+                for name, size in sorted(languages.items(), key=lambda item: -item[1])]
             result.update(title=repo, subtitle=repo_row(value)["metadata"], can_star=True,
-                          body=text(value.get("description")) + "\n\nLanguages\n" +
-                          "\n".join(f"{name}   {size / total:.1%}" for name, size in languages.items()))
+                          body="")
             starred, _ = self.api(f"user/starred/{repo}")
             result["starred"] = bool(starred)
             try:
                 readme, _ = self.api(f"repos/{repo}/readme" + ("?" + urlencode({"ref": ref}) if ref else ""))
-                result["body"] += "\n\nREADME\n\n" + decode_file(readme)
+                result["body"] = decode_file(readme)
             except Failure:
-                result["body"] += "\n\nNo readable README available."
+                result["body"] = "No readable README available."
         elif view in ("code", "file") and repo:
             path = request.get("path", "")
             if not isinstance(path, str) or len(path) > 2048 or any(p == ".." for p in path.split("/")):

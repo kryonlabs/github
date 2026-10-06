@@ -8,11 +8,13 @@ The client includes:
 
 - Organization navigation, accessible repositories, starred repositories and search.
 - Stars, forks, visibility, primary language and repository language percentages.
+- Organization profiles, repository summary panels and a language distribution bar.
 - README, directories, source files and branch selection.
 - Issues, pull requests, comments and patches, commit history, releases and Actions jobs.
 - Notifications that open their issue, pull request or commit in the client.
 - Star/unstar, new issues and comments through explicit buttons. Editors have a Close button.
 - Independent content scrolling, provider pagination, back navigation and narrow layouts.
+- Collection filters that include accessible private repositories and keep Starred searches scoped to your stars.
 - Native app state and control bounds for Harmony's existing app harness.
 
 The initial client does not yet edit repository files, merge pull requests,

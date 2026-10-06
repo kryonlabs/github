@@ -104,7 +104,35 @@ Frame :: (session: Session, viewport: Rectangle) -> s32 {
         if Action(session,301,"Search",.{x+width-88.0,top,88.0,38.0},true,!Model.loading) || (changed.committed && !Model.loading) { Model.route.page=1; Model.Changed() }
         top+=50.0
     }
-    Label(session,400,TextUntilNul(Model.message[:]),.{x,top,width,24.0},14,true); top+=32.0
+    if Model.message[0]!=0 { Label(session,400,TextUntilNul(Model.message[:]),.{x,top,width,24.0},14,true); top+=32.0 }
+    if Model.View()=="overview" && Model.can_star {
+        Label(session,410,TextUntilNul(Model.summary[0][:]),.{x,top,width,24.0},16,false); top+=34.0
+        stat_labels: [4]string=.{"Stars","Forks","Open issues / PRs","License"}
+        stat_values: [4]string=.{TextUntilNul(Model.summary[1][:]),TextUntilNul(Model.summary[2][:]),TextUntilNul(Model.summary[3][:]),TextUntilNul(Model.summary[5][:])}
+        stat_width:=width/4.0
+        for i: 0..cast(s32)3 {
+            stat_x:=x+cast(float32)i*stat_width
+            Panel(session,420+i,.{stat_x,top,stat_width-8.0,68.0},"surface")
+            Label(session,430+i,stat_values[i],.{stat_x+12.0,top+8.0,stat_width-30.0,28.0},22,false)
+            Label(session,440+i,stat_labels[i],.{stat_x+12.0,top+40.0,stat_width-30.0,20.0},12,true)
+        }; top+=82.0
+        if Model.language_count>0 {
+            Label(session,450,"Languages",.{x,top,width,24.0},16,false); top+=32.0
+            bar_x:=x
+            for i: 0..Model.language_count-1 {
+                part:=width*Model.language_percents[i]/100.0
+                panel: BoxProps; panel.key=cast(u64)(460+i); panel.bounds=.{bar_x,top,part,7.0}
+                colors: [8]Color=.{.{92,157,255,255},.{148,115,238,255},.{237,181,88,255},.{77,181,143,255},.{222,112,162,255},.{97,181,209,255},.{201,131,85,255},.{150,161,177,255}}
+                panel.fill=colors[i]; Box(session,panel); bar_x+=part
+            }; top+=17.0
+            shown: s32=ifx width<620.0 then 3 else 5; if shown>Model.language_count { shown=Model.language_count }
+            for i: 0..shown-1 {
+                out: Vec(u8); BuilderPrint(*out,"%  %",TextUntilNul(Model.language_names[i][:]),cast(s32)Model.language_percents[i]); BuilderPrint(*out,"%%"); value:=BuilderFinish(out)
+                Label(session,470+i,value,.{x+cast(float32)i*width/cast(float32)shown,top,width/cast(float32)shown-8.0,22.0},13,true); Model.Release(value)
+            }; top+=36.0
+        }
+        Label(session,480,"README",.{x,top,width,24.0},16,false); top+=32.0
+    }
     bottom:=viewport.y+viewport.height-64.0
     if Model.body[0]!=0 {
         area: TextAreaProps; area.key=500; area.focus_id=500; area.bounds=.{x,top,width,bottom-top-8.0}; area.value=TextUntilNul(Model.body[:]); area.label="GitHub content"; area.read_only=true; area.wrap=Model.View()!="file"; area.cursor=Model.body_cursor; area.anchor=Model.body_anchor; area.scroll_y=Model.body_scroll; area.focused=Model.body_focus
@@ -127,8 +155,10 @@ Frame :: (session: Session, viewport: Rectangle) -> s32 {
         }
         if scrolling.opened { unused End(session) }
     }
-    if Action(session,700,"Previous",.{x,bottom+12.0,96.0,36.0},false,Model.previous && !Model.loading) { Model.Page(-1) }
-    if Action(session,701,"Next",.{x+width-96.0,bottom+12.0,96.0,36.0},false,Model.next && !Model.loading) { Model.Page(1) }
+    if Model.next || Model.previous {
+        if Action(session,700,"Previous",.{x,bottom+12.0,96.0,36.0},false,Model.previous && !Model.loading) { Model.Page(-1) }
+        if Action(session,701,"Next",.{x+width-96.0,bottom+12.0,96.0,36.0},false,Model.next && !Model.loading) { Model.Page(1) }
+    }
     return 0
 }
 
@@ -148,7 +178,7 @@ DraftArea :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typ
 }
 
 SearchField :: (session: Session, bounds: Rectangle, key: s32, modifiers: s32, typed: string) -> TextFieldResult {
-        field: TextFieldProps; field.key=300; field.focus_id=300; field.bounds=bounds; field.value=TextUntilNul(Model.query[:]); field.placeholder="Search GitHub repositories"; field.label="Search repositories"; field.max_bytes=200
+        field: TextFieldProps; field.key=300; field.focus_id=300; field.bounds=bounds; field.value=TextUntilNul(Model.query[:]); field.placeholder=ifx Model.View()=="starred" then "Filter your starred repositories" else "Filter repositories by name, description or language"; field.label="Filter repositories"; field.max_bytes=200
         field.cursor=Model.query_cursor; field.anchor=Model.query_anchor; field.focused=Model.query_focus
         if field.focused { field.input=TextFieldInputFor(key,modifiers,typed) }
     return TextField(session,field)

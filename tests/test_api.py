@@ -27,6 +27,8 @@ class Fixture:
             return {"id": 1, "login": "fixture"}, {}
         if endpoint.startswith("user/orgs?"):
             return [{"login": "kryonlabs", "description": "Native applications"}], {}
+        if endpoint == "orgs/kryonlabs":
+            return {"login": "kryonlabs", "name": "Kryon Labs", "description": "Native applications", "public_repos": 12}, {}
         if endpoint.startswith(("orgs/", "user/repos?", "user/starred?", "search/repositories?")):
             values = [{"full_name": "kryonlabs/example", "stargazers_count": 42, "forks_count": 3, "language": "Ziran", "private": False, "description": "An example"}]
             return {"items": values} if endpoint.startswith("search/") else values, {"link": '<https://api.github.com/' + endpoint.split('?')[0] + '?page=2>; rel="next"'}
@@ -79,10 +81,28 @@ class ClientTests(unittest.TestCase):
 
     def test_repository_overview_has_languages_readme_and_star_state(self):
         response = self.client.read({"view": "overview", "repo": "kryonlabs/example"})
-        self.assertIn("Ziran   75.0%", response["body"])
+        self.assertEqual(response["languages"][0], {"name": "Ziran", "percent": 75.0})
+        self.assertEqual(response["summary"]["stars"], 42)
         self.assertIn("# Native app", response["body"])
         self.assertTrue(response["starred"])
         self.assertTrue(response["can_star"])
+
+    def test_search_filters_collection_across_pages_without_global_search(self):
+        calls = []
+        def provider(endpoint, method="GET", payload=None):
+            calls.append(endpoint)
+            if endpoint == "user":
+                return {"login": "fixture"}, {}
+            if endpoint.startswith("user/starred?"):
+                page = 2 if "page=2" in endpoint else 1
+                values = [{"full_name": f"fixture/{'match' if page == 2 else 'other'}", "language": "Ziran"}]
+                return values, {"link": '<https://api.github.com/user/starred?page=2>; rel="next"'} if page == 1 else {}
+            raise AssertionError(endpoint)
+        result = api.Client(provider).read({"view": "starred", "query": "match ziran"})
+        self.assertEqual([v["title"] for v in result["rows"]], ["fixture/match"])
+        self.assertFalse(result["next"])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(not endpoint.startswith("search/") for endpoint in calls))
 
     def test_files_are_read_in_client_and_directories_have_all_pages(self):
         request = {"view": "code", "repo": "kryonlabs/example"}

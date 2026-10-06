@@ -14,6 +14,9 @@ Route :: struct {
     path: [2049]u8
     ref: [257]u8
     item: [257]u8
+    query: [201]u8
+    scroll: s32
+    body_scroll: s32
     page: s32
 }
 route: Route;
@@ -25,6 +28,10 @@ next: bool;
 previous: bool;
 starred: bool;
 can_star: bool;
+summary: [6][2049]u8;
+language_names: [8][101]u8;
+language_percents: [8]float32;
+language_count: s32;
 title: [2049]u8;
 subtitle: [2049]u8;
 message: [2049]u8;
@@ -99,6 +106,20 @@ Tick :: () {
     Decode(0,"message",message[:]); state: [32]u8; Decode(0,"state",state[:])
     if TextUntilNul(state[:])!="ready" { return }
     Decode(0,"title",title[:]); Decode(0,"subtitle",subtitle[:]); Decode(0,"account",account[:]); Decode(0,"body",body[:])
+    overview:=FieldAt(Transport.Value(),0,"summary")
+    summary_fields: [6]string=.{"description","stars","forks","issues","branch","license"}
+    for i: 0..cast(s32)5 {
+        if i>=1 && i<=3 {
+            value:=ReadNumber(Transport.Value(),FieldAt(Transport.Value(),overview,summary_fields[i])); out: Vec(u8)
+            BuilderPrint(*out,"%",ifx value.valid then cast(s64)value.value else 0); number:=BuilderFinish(out); Set(summary[i][:],number); Release(number)
+        } else { Decode(overview,summary_fields[i],summary[i][:]) }
+    }
+    languages:=FieldAt(Transport.Value(),0,"languages"); language_count=ArrayCount(Transport.Value(),languages)
+    if language_count<0 { language_count=0 }; if language_count>8 { language_count=8 }
+    for i: 0..language_count-1 {
+        at:=ElementAt(Transport.Value(),languages,i); Decode(at,"name",language_names[i][:])
+        value:=ReadNumber(Transport.Value(),FieldAt(Transport.Value(),at,"percent")); language_percents[i]=ifx value.valid then cast(float32)value.value else 0.0
+    }
     next=Flag("next"); previous=Flag("previous"); starred=Flag("starred"); can_star=Flag("can_star")
     rows:=FieldAt(Transport.Value(),0,"rows"); count=ArrayCount(Transport.Value(),rows); if count<0 { count=0 }; if count>30 { count=30 }
     names: [6]string=.{"title","subtitle","metadata","kind","target","repo"}
@@ -106,14 +127,15 @@ Tick :: () {
     if composer!=0 && TextUntilNul(message[:])!="" { composer=0; draft[0]=0; draft_title[0]=0 }
 }
 Push :: () {
+    Set(route.query[:],TextUntilNul(query[:])); route.scroll=scroll; route.body_scroll=body_scroll
     if depth>=64 { for i: 0..cast(s32)62 { history[i]=history[i+1] }; depth=63 }
     history[depth]=route; depth+=1
 }
-Changed :: () { count=0; body[0]=0; title[0]=0; subtitle[0]=0; can_star=false; next=false; previous=false; scroll=0; body_scroll=0; body_cursor=0; body_anchor=0; body_focus=false; Request("") }
+Changed :: () { count=0; body[0]=0; title[0]=0; subtitle[0]=0; can_star=false; language_count=0; next=false; previous=false; scroll=0; body_scroll=0; body_cursor=0; body_anchor=0; body_focus=false; Request("") }
 Navigate :: (view: string) {
     if loading { return }; Push(); route=.{}; route.page=1; Set(route.view[:],view); query[0]=0; query_cursor=0; query_anchor=0; Changed()
 }
-Back :: () { if loading || depth==0 { return }; depth-=1; route=history[depth]; query[0]=0; Changed() }
+Back :: () { if loading || depth==0 { return }; depth-=1; route=history[depth]; Set(query[:],TextUntilNul(route.query[:])); query_cursor=cast(s32)TextUntilNul(query[:]).count; query_anchor=query_cursor; Changed(); scroll=route.scroll; body_scroll=route.body_scroll }
 Tab :: (view: string) { if loading { return }; Push(); Set(route.view[:],view); route.page=1; route.path[0]=0; route.item[0]=0; query[0]=0; Changed() }
 Select :: (index: s32) {
     if loading || index<0 || index>=count { return }
