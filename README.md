@@ -38,7 +38,7 @@ github-client
 ```
 
 For local development, use ignored `ziran.local.toml` overrides pointing to
-the canonical Ziran, Kryon and KSS checkouts. Dependencies and the compiler
+the canonical Ziran, Kryon and CSS checkouts. Dependencies and the compiler
 are pinned in `ziran.lock`. `make install` places a desktop entry and the
 `github-client` command under `~/.local`.
 

@@ -29,6 +29,6 @@ name = "GitHub"
 comment = "Native GitHub client for organizations, code and collaboration"
 categories = "Development;"
 
-[dependencies.kss]
-git = "https://github.com/kryonlabs/kss.git"
+[dependencies.css]
+git = "https://github.com/kryonlabs/css.git"
 ref = "master"
